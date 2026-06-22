@@ -13,6 +13,8 @@ import (
 	"strings"
 )
 
+
+
 // A Page represent a single page in a PDF file.
 // The methods interpret a Page dictionary stored in V.
 type Page struct {
@@ -145,14 +147,15 @@ func (p Page) Fonts() []string {
 
 // Font returns the font with the given name associated with the page.
 func (p Page) Font(name string) Font {
-	return Font{p.Resources().Key("Font").Key(name), nil}
+	return Font{V: p.Resources().Key("Font").Key(name)}
 }
 
 // A Font represent a font in a PDF file.
 // The methods interpret a Font dictionary stored in V.
 type Font struct {
-	V   Value
-	enc TextEncoding
+	V      Value
+	enc    TextEncoding
+	isBold *bool // cached bold detection result
 }
 
 // BaseFont returns the font's name (BaseFont property).
@@ -482,6 +485,100 @@ type Text struct {
 	Y        float64 // the Y coordinate, in points, increasing bottom to top
 	W        float64 // the width of the text, in points
 	S        string  // the actual UTF-8 text
+	IsBold   bool    // whether the text uses a bold font weight
+}
+
+// IsBold returns true if the font has a bold weight, determined by
+// checking the font name, the FontDescriptor Flags, and the embedded font program name.
+func (f Font) IsBold() bool {
+	if f.isBold != nil {
+		return *f.isBold
+	}
+	result := f.isBoldSlow()
+	f.isBold = &result
+	return result
+}
+
+func (f Font) isBoldSlow() bool {
+	name := f.BaseFont()
+	if i := strings.Index(name, "+"); i >= 0 {
+		name = name[i+1:]
+	}
+	if fontNameIsBold(name) {
+		return true
+	}
+	for _, fd := range f.fontDescriptors() {
+		if flags := fd.Key("Flags"); flags.Kind() == Integer {
+			if flags.Int64()&256 != 0 {
+				return true
+			}
+		}
+	}
+	if bold := f.checkFontProgram(); bold {
+		return true
+	}
+	return false
+}
+
+// checkFontProgram reads the embedded font program (FontFile/FontFile2/FontFile3)
+// and searches for bold weight indicators in the font name strings.
+func (f Font) checkFontProgram() bool {
+	for _, fd := range f.fontDescriptors() {
+		for _, key := range []string{"FontFile", "FontFile2", "FontFile3"} {
+			ff := fd.Key(key)
+			if ff.Kind() != Stream {
+				continue
+			}
+			rd := ff.Reader()
+			if rd == nil {
+				continue
+			}
+			data, err := io.ReadAll(rd)
+			rd.Close()
+			if err != nil || len(data) == 0 {
+				continue
+			}
+			s := string(data)
+			lower := strings.ToLower(s)
+			if strings.Contains(lower, "bold") || strings.Contains(lower, "black") || strings.Contains(lower, "heavy") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// fontDescriptors returns the FontDescriptor dictionaries to check for a font.
+// For simple fonts, this is just the top-level FontDescriptor.
+// For Type0/CIDFont fonts, the FontDescriptor is inside DescendantFonts.
+func (f Font) fontDescriptors() []Value {
+	var fds []Value
+	if fd := f.V.Key("FontDescriptor"); fd.Kind() == Dict {
+		fds = append(fds, fd)
+	}
+	if df := f.V.Key("DescendantFonts"); df.Kind() == Array {
+		for i := 0; i < df.Len(); i++ {
+			if fd := df.Index(i).Key("FontDescriptor"); fd.Kind() == Dict {
+				fds = append(fds, fd)
+			}
+		}
+	}
+	return fds
+}
+
+// fontNameIsBold checks if a font name indicates a bold weight.
+func fontNameIsBold(name string) bool {
+	n := strings.ToLower(name)
+	return strings.Contains(
+		n,
+		"bold",
+	) || strings.Contains(
+		n,
+		"black",
+	) || strings.Contains(
+		n,
+		"heavy",
+	)
 }
 
 // A Rect represents a rectangle.
@@ -840,6 +937,14 @@ func (p Page) Content() Content {
 	}
 
 	var text []Text
+
+	// Pre-compute bold status for all page fonts to avoid re-reading font programs
+	boldCache := make(map[string]bool)
+	for _, name := range p.Fonts() {
+		f := p.Font(name)
+		boldCache[f.BaseFont()] = f.IsBold()
+	}
+
 	showText := func(s string) {
 		n := 0
 		decoded := enc.Decode(s)
@@ -856,7 +961,8 @@ func (p Page) Content() Content {
 			}
 
 			Trm := matrix{{g.Tfs * g.Th, 0, 0}, {0, g.Tfs, 0}, {0, g.Trise, 1}}.mul(g.Tm).mul(g.CTM)
-			text = append(text, Text{f, Trm[0][0], Trm[2][0], Trm[2][1], w0 / 1000 * Trm[0][0], string(ch)})
+			isBold := boldCache[g.Tf.BaseFont()]
+			text = append(text, Text{f, Trm[0][0], Trm[2][0], Trm[2][1], w0 / 1000 * Trm[0][0], string(ch), isBold})
 
 			tx := w0/1000*g.Tfs + g.Tc
 			tx *= g.Th

@@ -7,7 +7,7 @@ import (
 )
 
 func main() {
-	f, r, err := pdf.Open("./pdf_test.pdf")
+	f, r, err := pdf.Open("./dms.pdf")
 	if err != nil {
 		panic(err)
 	}
@@ -20,11 +20,21 @@ func main() {
 
 	// Print all sentences
 	for _, sentence := range sentences {
-		fmt.Printf("Font: %s, Font-size: %f, x: %f, y: %f, content: %s \n",
+		bold := ""
+		if sentence.IsBold {
+			bold = " [BOLD]"
+		}
+		fmt.Printf("Font: %s, Font-size: %f, x: %f, y: %f, content: %s , Is Bold: %s \n",
 			sentence.Font,
 			sentence.FontSize,
 			sentence.X,
 			sentence.Y,
-			sentence.S)
+			sentence.S,
+			func() string {
+				if bold == "" {
+					return "false"
+				}
+				return "true"
+			}())
 	}
 }
