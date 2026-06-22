@@ -3,7 +3,7 @@ package main
 import (
 	"testing"
 
-	"github.com/ledongthuc/pdf"
+	"github.com/aruncs31s/pdf"
 )
 
 func TestBoldDetection(t *testing.T) {
